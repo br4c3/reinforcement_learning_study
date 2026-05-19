@@ -12,3 +12,11 @@ cmake -S . -B build \
 
 cmake --build build
 ```
+
+```bash
+brew install gnuplot
+```
+
+```bash
+brew install gnuplot imagemagick
+```

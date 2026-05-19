@@ -1,69 +1,18 @@
-// ================================================================
-// Minimal C++ DQN Reinforcement Learning Project with LibTorch
-// ================================================================
-// Project structure:
-//
-// reinforcement_learning_study/
-//   CMakeLists.txt
-//   src/
-//     main.cpp
-//   include/
-//   libtorch/
-//
-// This canvas contains BOTH files.
-// Copy the CMakeLists.txt section into CMakeLists.txt.
-// Copy the main.cpp section into src/main.cpp.
-// ================================================================
-
-/*
-======================== CMakeLists.txt ========================
-
-cmake_minimum_required(VERSION 3.18)
-project(MyProject LANGUAGES CXX)
-
-set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_CXX_EXTENSIONS OFF)
-
-find_package(Torch REQUIRED)
-
-add_executable(main
-    src/main.cpp
-)
-
-target_include_directories(main
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
-)
-
-target_link_libraries(main
-    PRIVATE ${TORCH_LIBRARIES}
-)
-
-target_compile_options(main PRIVATE
-    -Wall -Wextra -Wpedantic
-)
-
-set_property(TARGET main PROPERTY CXX_STANDARD 17)
-
-=================================================================
-*/
-
-// ========================== src/main.cpp ==========================
-
 #include <torch/torch.h>
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <deque>
+#include <filesystem>
 #include <iostream>
 #include <random>
 #include <stdexcept>
+#include <string>
 #include <tuple>
+#include <utility>
 #include <vector>
 
-// ---------------------------------------------------------------
-// Utility random engine
-// ---------------------------------------------------------------
 class Random {
 public:
     Random() : gen_(std::random_device{}()) {}
@@ -84,97 +33,147 @@ private:
 
 Random RNG;
 
-// ---------------------------------------------------------------
-// Toy Environment
-// ---------------------------------------------------------------
-// State: [position_normalized]
-// Actions:
-//   0 -> move left
-//   1 -> move right
-// Goal: reach target position.
-// Reward:
-//   +10 when reaching target
-//   otherwise negative distance penalty
-// ---------------------------------------------------------------
 struct StepResult {
     torch::Tensor next_state;
     float reward;
     bool done;
 };
 
-class LineWorldEnv {
+class GridWorldEnv {
 public:
-    LineWorldEnv(int min_pos = -10, int max_pos = 10, int target_pos = 7, int max_steps = 50)
-        : min_pos_(min_pos),
-          max_pos_(max_pos),
-          target_pos_(target_pos),
-          max_steps_(max_steps) {
-        if (min_pos_ >= max_pos_) {
-            throw std::invalid_argument("min_pos must be smaller than max_pos");
-        }
+    GridWorldEnv()
+        : width_(7),
+          height_(7),
+          start_({0, 0}),
+          goal_({6, 6}),
+          max_steps_(80) {
+        obstacles_ = {
+            {1, 1}, {2, 1}, {3, 1},
+            {3, 2},
+            {1, 3},
+            {3, 4}, {4, 4}, {5, 4},
+            {5, 5}
+        };
+
         reset();
     }
 
     torch::Tensor reset() {
-        position_ = RNG.randint(min_pos_, max_pos_);
+        agent_ = start_;
         steps_ = 0;
-
-        // Avoid starting exactly at target.
-        if (position_ == target_pos_) {
-            position_ = min_pos_;
-        }
-
         return get_state();
     }
 
     StepResult step(int action) {
+        auto [x, y] = agent_;
+
+        int nx = x;
+        int ny = y;
+
         if (action == 0) {
-            position_ -= 1;
+            ny -= 1;  // up
         } else if (action == 1) {
-            position_ += 1;
+            ny += 1;  // down
+        } else if (action == 2) {
+            nx -= 1;  // left
+        } else if (action == 3) {
+            nx += 1;  // right
         } else {
             throw std::invalid_argument("Invalid action");
         }
 
-        position_ = std::max(min_pos_, std::min(max_pos_, position_));
         steps_++;
 
-        const int distance = std::abs(target_pos_ - position_);
-        bool reached_goal = (position_ == target_pos_);
-        bool timeout = (steps_ >= max_steps_);
+        bool hit_wall = nx < 0 || nx >= width_ || ny < 0 || ny >= height_;
+        bool hit_obstacle = false;
+
+        if (!hit_wall) {
+            hit_obstacle = is_obstacle(nx, ny);
+        }
+
+        float reward = -0.05f;
+
+        if (hit_wall || hit_obstacle) {
+            reward = -1.0f;
+        } else {
+            agent_ = {nx, ny};
+
+            const int old_dist = manhattan_distance(x, y, goal_.first, goal_.second);
+            const int new_dist = manhattan_distance(nx, ny, goal_.first, goal_.second);
+
+            if (new_dist < old_dist) {
+                reward += 0.10f;
+            } else {
+                reward -= 0.10f;
+            }
+        }
+
+        bool reached_goal = agent_ == goal_;
+        bool timeout = steps_ >= max_steps_;
         bool done = reached_goal || timeout;
 
-        float reward = reached_goal ? 10.0f : -static_cast<float>(distance) / 10.0f;
+        if (reached_goal) {
+            reward = 10.0f;
+        }
 
         return {get_state(), reward, done};
     }
 
-    int action_dim() const {
+    int state_dim() const {
         return 2;
     }
 
-    int state_dim() const {
-        return 1;
+    int action_dim() const {
+        return 4;
+    }
+
+    int width() const {
+        return width_;
+    }
+
+    int height() const {
+        return height_;
+    }
+
+    std::pair<int, int> agent() const {
+        return agent_;
+    }
+
+    std::pair<int, int> goal() const {
+        return goal_;
+    }
+
+    bool is_obstacle(int x, int y) const {
+        return std::find(
+            obstacles_.begin(),
+            obstacles_.end(),
+            std::make_pair(x, y)
+        ) != obstacles_.end();
     }
 
 private:
     torch::Tensor get_state() const {
-        float normalized = static_cast<float>(position_) / static_cast<float>(max_pos_);
-        return torch::tensor({normalized}, torch::kFloat32);
+        float nx = static_cast<float>(agent_.first) / static_cast<float>(width_ - 1);
+        float ny = static_cast<float>(agent_.second) / static_cast<float>(height_ - 1);
+
+        return torch::tensor({nx, ny}, torch::kFloat32);
+    }
+
+    int manhattan_distance(int x1, int y1, int x2, int y2) const {
+        return std::abs(x1 - x2) + std::abs(y1 - y2);
     }
 
 private:
-    int min_pos_;
-    int max_pos_;
-    int target_pos_;
+    int width_;
+    int height_;
+    std::pair<int, int> start_;
+    std::pair<int, int> goal_;
+    std::pair<int, int> agent_;
+    std::vector<std::pair<int, int>> obstacles_;
     int max_steps_;
-    int position_ = 0;
     int steps_ = 0;
 };
 
-// ---------------------------------------------------------------
-// Replay Buffer
-// ---------------------------------------------------------------
 struct Transition {
     torch::Tensor state;
     int action;
@@ -191,6 +190,7 @@ public:
         if (buffer_.size() >= capacity_) {
             buffer_.pop_front();
         }
+
         buffer_.push_back(transition);
     }
 
@@ -219,21 +219,17 @@ private:
     std::deque<Transition> buffer_;
 };
 
-// ---------------------------------------------------------------
-// Q-Network
-// ---------------------------------------------------------------
 struct QNetworkImpl : torch::nn::Module {
     QNetworkImpl(int state_dim, int action_dim) {
-        fc1 = register_module("fc1", torch::nn::Linear(state_dim, 64));
-        fc2 = register_module("fc2", torch::nn::Linear(64, 64));
-        fc3 = register_module("fc3", torch::nn::Linear(64, action_dim));
+        fc1 = register_module("fc1", torch::nn::Linear(state_dim, 128));
+        fc2 = register_module("fc2", torch::nn::Linear(128, 128));
+        fc3 = register_module("fc3", torch::nn::Linear(128, action_dim));
     }
 
     torch::Tensor forward(torch::Tensor x) {
         x = torch::relu(fc1->forward(x));
         x = torch::relu(fc2->forward(x));
-        x = fc3->forward(x);
-        return x;
+        return fc3->forward(x);
     }
 
     torch::nn::Linear fc1{nullptr};
@@ -243,9 +239,6 @@ struct QNetworkImpl : torch::nn::Module {
 
 TORCH_MODULE(QNetwork);
 
-// ---------------------------------------------------------------
-// Copy network weights
-// ---------------------------------------------------------------
 void copy_weights(QNetwork& source, QNetwork& target) {
     torch::NoGradGuard no_grad;
 
@@ -253,36 +246,29 @@ void copy_weights(QNetwork& source, QNetwork& target) {
     auto target_params = target->named_parameters();
 
     for (const auto& item : source_params) {
-        const auto& name = item.key();
-        target_params[name].copy_(item.value());
-    }
-
-    auto source_buffers = source->named_buffers();
-    auto target_buffers = target->named_buffers();
-
-    for (const auto& item : source_buffers) {
-        const auto& name = item.key();
-        target_buffers[name].copy_(item.value());
+        target_params[item.key()].copy_(item.value());
     }
 }
 
-// ---------------------------------------------------------------
-// Epsilon-greedy action selection
-// ---------------------------------------------------------------
-int select_action(QNetwork& q_net, const torch::Tensor& state, float epsilon, int action_dim, torch::Device device) {
+int select_action(
+    QNetwork& q_net,
+    const torch::Tensor& state,
+    float epsilon,
+    int action_dim,
+    torch::Device device
+) {
     if (RNG.uniform() < epsilon) {
         return RNG.randint(0, action_dim - 1);
     }
 
     torch::NoGradGuard no_grad;
-    torch::Tensor input = state.to(device).unsqueeze(0);  // [1, state_dim]
+
+    torch::Tensor input = state.to(device).unsqueeze(0);
     torch::Tensor q_values = q_net->forward(input);
+
     return q_values.argmax(1).item<int>();
 }
 
-// ---------------------------------------------------------------
-// Single DQN training update
-// ---------------------------------------------------------------
 float train_step(
     QNetwork& q_net,
     QNetwork& target_net,
@@ -314,8 +300,8 @@ float train_step(
         dones.push_back(t.done ? 1.0f : 0.0f);
     }
 
-    torch::Tensor state_batch = torch::stack(states).to(device);              // [B, state_dim]
-    torch::Tensor next_state_batch = torch::stack(next_states).to(device);    // [B, state_dim]
+    torch::Tensor state_batch = torch::stack(states).to(device);
+    torch::Tensor next_state_batch = torch::stack(next_states).to(device);
     torch::Tensor action_batch = torch::tensor(actions, torch::kInt64).to(device).unsqueeze(1);
     torch::Tensor reward_batch = torch::tensor(rewards, torch::kFloat32).to(device);
     torch::Tensor done_batch = torch::tensor(dones, torch::kFloat32).to(device);
@@ -326,8 +312,10 @@ float train_step(
     torch::Tensor target_q;
     {
         torch::NoGradGuard no_grad;
+
         torch::Tensor next_q_values = target_net->forward(next_state_batch);
         torch::Tensor max_next_q = std::get<0>(next_q_values.max(1));
+
         target_q = reward_batch + gamma * max_next_q * (1.0f - done_batch);
     }
 
@@ -340,26 +328,29 @@ float train_step(
     return loss.item<float>();
 }
 
-// ---------------------------------------------------------------
-// Evaluate learned policy
-// ---------------------------------------------------------------
-float evaluate_policy(QNetwork& q_net, LineWorldEnv& env, int episodes, torch::Device device) {
+float evaluate_policy(
+    QNetwork& q_net,
+    GridWorldEnv& env,
+    int episodes,
+    torch::Device device
+) {
     int success_count = 0;
 
     for (int ep = 0; ep < episodes; ++ep) {
         torch::Tensor state = env.reset();
         bool done = false;
-        float total_reward = 0.0f;
+        int steps = 0;
 
-        while (!done) {
+        while (!done && steps < 100) {
             int action = select_action(q_net, state, 0.0f, env.action_dim(), device);
             StepResult result = env.step(action);
+
             state = result.next_state;
-            total_reward += result.reward;
             done = result.done;
+            steps++;
         }
 
-        if (total_reward > 0.0f) {
+        if (env.agent() == env.goal()) {
             success_count++;
         }
     }
@@ -367,13 +358,196 @@ float evaluate_policy(QNetwork& q_net, LineWorldEnv& env, int episodes, torch::D
     return static_cast<float>(success_count) / static_cast<float>(episodes);
 }
 
-// ---------------------------------------------------------------
-// Main
-// ---------------------------------------------------------------
+void write_datablock(
+    FILE* gp,
+    const std::string& name,
+    const std::vector<double>& x,
+    const std::vector<double>& y
+) {
+    fprintf(gp, "$%s << EOD\n", name.c_str());
+
+    for (size_t i = 0; i < x.size(); ++i) {
+        fprintf(gp, "%f %f\n", x[i], y[i]);
+    }
+
+    fprintf(gp, "EOD\n");
+}
+
+void plot_training_result(
+    const std::vector<double>& episodes,
+    const std::vector<double>& rewards,
+    const std::vector<double>& losses,
+    const std::vector<double>& success_rates,
+    const std::vector<double>& epsilons
+) {
+    FILE* gp = popen("gnuplot -persistent", "w");
+
+    if (!gp) {
+        std::cerr << "Failed to open gnuplot.\n";
+        return;
+    }
+
+    write_datablock(gp, "reward", episodes, rewards);
+    write_datablock(gp, "loss", episodes, losses);
+    write_datablock(gp, "success", episodes, success_rates);
+    write_datablock(gp, "epsilon", episodes, epsilons);
+
+    fprintf(gp, "set terminal qt size 1200,800\n");
+    fprintf(gp, "set grid\n");
+    fprintf(gp, "set key outside\n");
+    fprintf(gp, "set multiplot layout 2,2 title '2D GridWorld DQN Training Result'\n");
+
+    fprintf(gp, "set title 'Episode Reward'\n");
+    fprintf(gp, "set xlabel 'Episode'\n");
+    fprintf(gp, "set ylabel 'Reward'\n");
+    fprintf(gp, "unset yrange\n");
+    fprintf(gp, "plot $reward using 1:2 with lines linewidth 2 title 'Reward'\n");
+
+    fprintf(gp, "set title 'DQN Loss'\n");
+    fprintf(gp, "set xlabel 'Episode'\n");
+    fprintf(gp, "set ylabel 'Loss'\n");
+    fprintf(gp, "unset yrange\n");
+    fprintf(gp, "plot $loss using 1:2 with lines linewidth 2 title 'Loss'\n");
+
+    fprintf(gp, "set title 'Success Rate'\n");
+    fprintf(gp, "set xlabel 'Episode'\n");
+    fprintf(gp, "set ylabel 'Success Rate'\n");
+    fprintf(gp, "set yrange [0:1.05]\n");
+    fprintf(gp, "plot $success using 1:2 with lines linewidth 2 title 'Success Rate'\n");
+
+    fprintf(gp, "set title 'Epsilon Decay'\n");
+    fprintf(gp, "set xlabel 'Episode'\n");
+    fprintf(gp, "set ylabel 'Epsilon'\n");
+    fprintf(gp, "set yrange [0:1.05]\n");
+    fprintf(gp, "plot $epsilon using 1:2 with lines linewidth 2 title 'Epsilon'\n");
+
+    fprintf(gp, "unset multiplot\n");
+    fflush(gp);
+
+    std::cout << "Close the plot window to exit.\n";
+    std::cout << "Press ENTER to continue...\n";
+    std::cin.get();
+
+    pclose(gp);
+}
+
+void save_grid_frame(
+    GridWorldEnv& env,
+    int step,
+    const std::string& output_dir
+) {
+    FILE* gp = popen("gnuplot", "w");
+
+    if (!gp) {
+        std::cerr << "Failed to open gnuplot.\n";
+        return;
+    }
+
+    auto agent = env.agent();
+    auto goal = env.goal();
+
+    std::string filename =
+        output_dir + "/frame_" + std::to_string(1000 + step) + ".png";
+
+    fprintf(gp, "set terminal pngcairo size 700,700 enhanced font 'Arial,16'\n");
+    fprintf(gp, "set output '%s'\n", filename.c_str());
+
+    fprintf(gp, "unset key\n");
+    fprintf(gp, "unset colorbox\n");
+    fprintf(gp, "set size square\n");
+
+    fprintf(gp, "set xrange [-0.5:%f]\n", env.width() - 0.5);
+    fprintf(gp, "set yrange [%f:-0.5]\n", env.height() - 0.5);
+
+    fprintf(gp, "set xtics 1\n");
+    fprintf(gp, "set ytics 1\n");
+    fprintf(gp, "set grid linewidth 1\n");
+
+    fprintf(gp, "set title 'DQN GridWorld Policy | Step %d'\n", step);
+
+    fprintf(gp, "$cells << EOD\n");
+
+    for (int y = 0; y < env.height(); ++y) {
+        for (int x = 0; x < env.width(); ++x) {
+            int value = 0;
+
+            if (env.is_obstacle(x, y)) {
+                value = 1;
+            }
+
+            if (goal.first == x && goal.second == y) {
+                value = 2;
+            }
+
+            if (agent.first == x && agent.second == y) {
+                value = 3;
+            }
+
+            fprintf(gp, "%d %d %d\n", x, y, value);
+        }
+    }
+
+    fprintf(gp, "EOD\n");
+
+    fprintf(gp, "set palette defined (0 'white', 1 'black', 2 'green', 3 'red')\n");
+    fprintf(gp, "plot $cells using 1:2:3 with points pt 5 ps 8 palette\n");
+
+    fprintf(gp, "set output\n");
+    fflush(gp);
+    pclose(gp);
+}
+
+void save_policy_gif(
+    QNetwork& q_net,
+    GridWorldEnv& env,
+    torch::Device device
+) {
+    const std::string frame_dir = "frames";
+
+    std::filesystem::remove_all(frame_dir);
+    std::filesystem::create_directory(frame_dir);
+
+    torch::Tensor state = env.reset();
+    bool done = false;
+    int step = 0;
+
+    save_grid_frame(env, step, frame_dir);
+
+    while (!done && step < 100) {
+        int action = select_action(q_net, state, 0.0f, env.action_dim(), device);
+        StepResult result = env.step(action);
+
+        state = result.next_state;
+        done = result.done;
+        step++;
+
+        save_grid_frame(env, step, frame_dir);
+    }
+
+    std::cout << "Saved " << step + 1 << " frames to " << frame_dir << "/\n";
+
+    int ret = std::system(
+        "magick -delay 40 -loop 0 frames/frame_*.png gridworld_policy.gif"
+    );
+
+    if (ret != 0) {
+        std::cout << "ImageMagick command failed.\n";
+        std::cout << "If you are on Ubuntu, try:\n";
+        std::cout << "  convert -delay 40 -loop 0 frames/frame_*.png gridworld_policy.gif\n";
+
+        std::system(
+            "convert -delay 40 -loop 0 frames/frame_*.png gridworld_policy.gif"
+        );
+    }
+
+    std::cout << "GIF saved to gridworld_policy.gif\n";
+}
+
 int main() {
     torch::manual_seed(42);
 
     torch::Device device(torch::kCPU);
+
     if (torch::cuda::is_available()) {
         device = torch::Device(torch::kCUDA);
         std::cout << "Using CUDA\n";
@@ -381,7 +555,7 @@ int main() {
         std::cout << "Using CPU\n";
     }
 
-    LineWorldEnv env;
+    GridWorldEnv env;
 
     const int state_dim = env.state_dim();
     const int action_dim = env.action_dim();
@@ -392,29 +566,39 @@ int main() {
     q_net->to(device);
     target_net->to(device);
 
-    // Copy initial weights to target network.
     copy_weights(q_net, target_net);
 
-    torch::optim::Adam optimizer(q_net->parameters(), torch::optim::AdamOptions(1e-3));
+    torch::optim::Adam optimizer(
+        q_net->parameters(),
+        torch::optim::AdamOptions(1e-3)
+    );
 
-    ReplayBuffer replay_buffer(10000);
+    ReplayBuffer replay_buffer(30000);
 
-    const int num_episodes = 600;
-    const int max_steps_per_episode = 50;
+    const int num_episodes = 1200;
+    const int max_steps_per_episode = 80;
     const size_t batch_size = 64;
-    const float gamma = 0.99f;
+    const float gamma = 0.98f;
 
     float epsilon = 1.0f;
-    const float epsilon_min = 0.05f;
+    const float epsilon_min = 0.03f;
     const float epsilon_decay = 0.995f;
 
     const int warmup_steps = 500;
     const int target_update_interval = 20;
+    const int plot_update_interval = 20;
 
     int global_step = 0;
 
+    std::vector<double> plot_episodes;
+    std::vector<double> plot_rewards;
+    std::vector<double> plot_losses;
+    std::vector<double> plot_success_rates;
+    std::vector<double> plot_epsilons;
+
     for (int episode = 1; episode <= num_episodes; ++episode) {
         torch::Tensor state = env.reset();
+
         float episode_reward = 0.0f;
         float last_loss = 0.0f;
 
@@ -457,8 +641,15 @@ int main() {
             copy_weights(q_net, target_net);
         }
 
-        if (episode % 20 == 0) {
-            float success_rate = evaluate_policy(q_net, env, 30, device);
+        if (episode % plot_update_interval == 0) {
+            float success_rate = evaluate_policy(q_net, env, 50, device);
+
+            plot_episodes.push_back(static_cast<double>(episode));
+            plot_rewards.push_back(static_cast<double>(episode_reward));
+            plot_losses.push_back(static_cast<double>(last_loss));
+            plot_success_rates.push_back(static_cast<double>(success_rate));
+            plot_epsilons.push_back(static_cast<double>(epsilon));
+
             std::cout << "Episode " << episode
                       << " | Reward: " << episode_reward
                       << " | Loss: " << last_loss
@@ -468,11 +659,22 @@ int main() {
         }
     }
 
-    std::cout << "Training finished.\n";
+    std::cout << "\nTraining finished.\n";
 
-    // Save model.
-    torch::save(q_net, "dqn_lineworld.pt");
-    std::cout << "Model saved to dqn_lineworld.pt\n";
+    torch::save(q_net, "dqn_gridworld.pt");
+    std::cout << "Model saved to dqn_gridworld.pt\n";
+
+    std::cout << "\nSaving policy GIF...\n";
+    save_policy_gif(q_net, env, device);
+
+    std::cout << "\nShowing final training plot.\n";
+    plot_training_result(
+        plot_episodes,
+        plot_rewards,
+        plot_losses,
+        plot_success_rates,
+        plot_epsilons
+    );
 
     return 0;
 }
