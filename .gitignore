@@ -69,3 +69,21 @@ vcpkg_installed/
 # test output & cache
 Testing/
 .cache/
+.venv/
+__pycache__/
+*.py[cod]
+
+# RL outputs
+models/
+dogfight_6dof_rl_trace.csv
+dogfight_6dof_rl_final.png
+dogfight_6dof_sac_trace.csv
+dogfight_6dof_sac_final.png
+dogfight_6dof_sac_static_trace.csv
+dogfight_6dof_sac_static_final.png
+dogfight_6dof_mappo_trace.csv
+dogfight_6dof_mappo_final.png
+dogfight_6dof_mappo_static_trace.csv
+dogfight_6dof_mappo_static_final.png
+dogfight_6dof_mappo_selfplay_trace.csv
+dogfight_6dof_mappo_selfplay_final.png
