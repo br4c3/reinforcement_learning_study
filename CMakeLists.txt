@@ -29,13 +29,6 @@ find_package(Torch REQUIRED)
 
 add_executable(main
     src/main.cpp
-    src/dqn_agent.cpp
-    src/grid_world_env.cpp
-    src/q_network.cpp
-    src/random.cpp
-    src/replay_buffer.cpp
-    src/training_session.cpp
-    src/visualizer.cpp
 )
 
 target_include_directories(main PRIVATE include)
