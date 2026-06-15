@@ -54,7 +54,7 @@ FetchContent_MakeAvailable(raylib)
 # =========================================
 
 add_executable(main
-        src/main.cpp
+        src/Q-learning.cpp
 )
 
 target_include_directories(main PRIVATE
